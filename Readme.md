@@ -23,7 +23,7 @@ dill 是一个用于linux kernel调试的gdb 插件，基于gdb 的python api开
 
 （4）kcache 获得特定类型kmem_cache 的freelist, partial  
 
-![](./image/8.jpg)
+![](./image/8.PNG)
 
 输出主要分成四个部分：
 
