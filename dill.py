@@ -22,7 +22,7 @@ def get_symbol_addr(symbol):
     return gdb.lookup_global_symbol(symbol).value().address 
 
 cpu0_offset = gdb.lookup_global_symbol('__per_cpu_offset').value()[0]
-current_task_offset = get_symbol_addr('current_task')
+#current_task_offset = get_symbol_addr('current_task')
 
 def cprint(*info):
 
@@ -33,27 +33,27 @@ def cprint(*info):
 
     for i in info[0:pos]:
         if info[pos] == 'red': 
-            print('\033[31;2m'+str(i)+'\033[0m', end='')
+            print('\033[31;1m'+str(i)+'\033[0m', end='')
             continue
 
         if info[pos] == 'green': 
-            print('\033[32;15m'+str(i)+'\033[0m', end='')
+            print('\033[32;1m'+str(i)+'\033[0m', end='')
             continue
 
         if info[pos] == 'yellow': 
-            print('\033[33;10m'+str(i)+'\033[0m', end='')
+            print('\033[33;1m'+str(i)+'\033[0m', end='')
             continue
 
         if info[pos] == 'blue': 
-            print('\033[34;10m'+str(i)+'\033[0m', end='')
+            print('\033[34;1m'+str(i)+'\033[0m', end='')
             continue
 
         if info[pos] == 'deep_green': 
-            print('\033[36;10m'+str(i)+'\033[0m', end='')
+            print('\033[36;1m'+str(i)+'\033[0m', end='')
             continue
 
         if info[pos] == 'white': 
-            print('\033[37;10m'+str(i)+'\033[0m', end='')
+            print('\033[37;1m'+str(i)+'\033[0m', end='')
             continue
 
     if info[-1] == 1:
@@ -62,13 +62,13 @@ def cprint(*info):
         print()
 
 
-def get_current_task():
-    current_task_ptr = vtoint(cpu0_offset)+vtoint(current_task_offset)
-    current_task = get_addr_content(current_task_ptr)
-    current = get_ptr_obj(current_task, 'task_struct')
-    name = current['comm'].string()
-    pid = vtoint(current['pid'])
-    return (name, pid)
+# def get_current_task():
+#     current_task_ptr = vtoint(cpu0_offset)+vtoint(current_task_offset)
+#     current_task = get_addr_content(current_task_ptr)
+#     current = get_ptr_obj(current_task, 'task_struct')
+#     name = current['comm'].string()
+#     pid = vtoint(current['pid'])
+#     return (name, pid)
 
 def get_task_struct(pid):
 
@@ -147,42 +147,52 @@ def get_next_cache(cache, list_offset):
     next_cache = get_ptr_obj(vtoint(next)-list_offset, 'kmem_cache')
     return next_cache
 
-def get_freelist(freelist, offset):
+def swab(a):
+    re = 0
+    while(a):
+        re = re * 0x100 + (a%0x100)
+        a = a // 0x100
+    return re
+
+def def_freelist(freelist, value, random):
+    return swab(freelist) ^ random ^ value
+
+def get_freelist(freelist, offset, random):
     while True:
         if freelist != 0:
             cprint("    ->", ptrtohex(freelist), 'deep_green')
         else:
             cprint("    ->", ptrtohex(freelist), ' (freelist)', 'deep_green')
             break
-        freelist = get_addr_content(freelist + offset)
+        freelist = def_freelist(int(freelist+offset), get_addr_content(freelist + offset), random)
 
-def get_partial_freelist(next_page, offset, page_num, page_type, color):
+def get_partial_freelist(next_page, offset, random, page_num, page_type, color):
 
     cprint(page_type, " partial page", page_num, ": ", ptrtohex(next_page), color)
 
     if next_page != 0:
         partial_page = get_ptr_obj(next_page, 'page')
         partial_free = vtoint(partial_page['freelist']) 
-        get_freelist(partial_free, offset)
+        get_freelist(partial_free, offset, random)
 
-def get_cpu_partial_page(partial, offset):
+def get_cpu_partial_page(partial, offset, random):
     page_num = 0
     next_page = get_ptr_obj(partial, 'page') # page0
     while True:
-        get_partial_freelist(next_page, offset, page_num, 'cache_cpu', 'red') # print freelist
+        get_partial_freelist(next_page, offset, random, page_num, 'cache_cpu', 'red') # print freelist
         next = vtoint(next_page['next'])
         next_page = get_ptr_obj(next, 'page')
         if next_page == 0:
             break
         page_num += 1
 
-def get_node_partial_page(node_page_partial_next, node_page_partial_prev, offset):
+def get_node_partial_page(node_page_partial_next, node_page_partial_prev, offset, random):
     page_num = 0
     node_partial_page = node_page_partial_next - 0x8
     next_page = get_ptr_obj(node_partial_page, 'page') # page0
     next_lru = node_page_partial_next
     while True:
-        get_partial_freelist(next_page, offset, page_num, 'cache_node', 'yellow') # print freelist
+        get_partial_freelist(next_page, offset, random, page_num, 'cache_node', 'yellow') # print freelist
         if(next_lru == node_page_partial_prev):
             break
         next_lru = get_ptr_obj(next_lru, 'list_head')
@@ -196,7 +206,8 @@ def get_kmem_cache(kmem_cache_name):
     list_offset = get_struct_offset('kmem_cache', 'list', 0)
     slab_caches = get_symbol_addr('slab_caches')
     start = get_ptr_obj(vtoint(slab_caches)-list_offset, 'kmem_cache')
-    cprint("start: ", start, 'red')
+    cprint("slab_caches: ", slab_caches, 'red')
+    cprint("offset of kmem_cache->list: ", hex(list_offset), 'red')
     next = get_next_cache(start, list_offset)
 
     while True:
@@ -208,14 +219,14 @@ def get_kmem_cache(kmem_cache_name):
         objects_count = (oo & ((1 << 16) -1)) 
         pages_count = (2 ** (oo >> 16))
         offset = vtoint(next['offset'])
-
+        random = vtoint(next['random'])
+        
         #-----kmem_cache_cpu
         cpu_slab_offset = vtoint(next['cpu_slab'])
         cache_cpu = get_ptr_obj(cpu0_offset + cpu_slab_offset, 'kmem_cache_cpu')
         free = vtoint(cache_cpu['freelist']) # kmem_cache_cpu freelist 
-        page = ptrtohex(cache_cpu['page'])
+        slab = ptrtohex(cache_cpu['slab'])
         partial = vtoint(cache_cpu['partial']) # kmem_cache_cpu partial 
-
         #-----kmem_cache_node
         node = vtoint(next['node'])   
         cache_node_0 = get_addr_content(node) # get first node
@@ -223,37 +234,39 @@ def get_kmem_cache(kmem_cache_name):
         
         if name == kmem_cache_name: 
             #-------------print kmem_cache information
-            cprint("cpu #0 > ", ptrtohex(cpu0_offset), " | ", cache_cpu, 'red')
             cprint('<'+kmem_cache_name+'>:', 'red')
-            cprint('kmem_cache    : ', ptrtohex(next), 'green')
-            cprint('oo            : ', oo, 'green')
-            cprint('objects_count : ', objects_count, 'green')
-            cprint('pages_count   : ', pages_count, 'green')
-            cprint('offset        : ', offset, 'green')
-            cprint('min_partial   : ', min_partial, 'green')
-            cprint('cpu_partial   : ', cpu_partial, 'green')
-            #print('random: ', random)
-            #cprint('page        : ', page, 'green') # kmem_cache_cpu page
+            cprint('kmem_cache      : ', ptrtohex(next), 'green')
+            cprint('cpu #0 cpu_slab : ', cache_cpu, 'green')
+            cprint('oo              : ', oo, 'green')
+            cprint('objects_count   : ', objects_count, 'green')
+            cprint('pages_count     : ', pages_count, 'green')
+            cprint('offset          : ', offset, 'green')
+            cprint('min_partial     : ', min_partial, 'green')
+            cprint('cpu_partial     : ', cpu_partial, 'green')
+            cprint('random          : ', random, 'green')
             
             #-------------kmem_cache_cpu freelist
+            cprint('cache_cpu slab: ', slab, 'deep_green') # kmem_cache_cpu slab
             cprint("cache_cpu freelist: ", 'deep_green')
-            get_freelist(free, offset)
+            get_freelist(free, offset, random)
 
             #-------------kmem_cache_cpu partial
+            #print("heeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+            #print(partial)
             if partial == 0:
-                cprint("cache_cpu partial page", " -> ", ptrtohex(partial), 'red')
+                cprint("cache_cpu partial slab", " -> ", ptrtohex(partial), 'deep_green')
             else:
-                get_cpu_partial_page(partial, offset)
+                get_cpu_partial_page(partial, offset, random)
 
             #-------------kmem_cache_node partial
             cprint('first cache_node addr : ', ptrtohex(cache_node), 'yellow') 
-            cprint("cache_node['partial']['next']: ", cache_node['partial']['next'], 'yellow')
+            #cprint("cache_node['partial']['next']: ", cache_node['partial']['next'], 'yellow')
             node_page_partial_next = vtoint(cache_node['partial']['next'])
             node_page_partial_prev = vtoint(cache_node['partial']['prev'])
             if node_page_partial_next == node_page_partial_prev:
                 cprint("cache_node partial page", " -> ", '0x0' , 'yellow')
             else:
-                get_node_partial_page(node_page_partial_next, node_page_partial_prev, offset)
+                get_node_partial_page(node_page_partial_next, node_page_partial_prev, offset, random)
 
             #-------------kmem_cache_node full
             node_page_full_next = vtoint(cache_node['full']['next'])
