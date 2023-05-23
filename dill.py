@@ -166,40 +166,40 @@ def get_freelist(freelist, offset, random):
             break
         freelist = def_freelist(int(freelist+offset), get_addr_content(freelist + offset), random)
 
-def get_partial_freelist(next_page, offset, random, page_num, page_type, color):
+def get_partial_freelist(next_slab, offset, random, slab_num, slab_type, color):
 
-    cprint(page_type, " partial page", page_num, ": ", ptrtohex(next_page), color)
+    cprint(slab_type, " partial slab", slab_num, ": ", ptrtohex(next_slab), color)
 
-    if next_page != 0:
-        partial_page = get_ptr_obj(next_page, 'page')
-        partial_free = vtoint(partial_page['freelist']) 
+    if next_slab != 0:
+        partial_slab = get_ptr_obj(next_slab, 'slab')
+        partial_free = vtoint(partial_slab['freelist']) 
         get_freelist(partial_free, offset, random)
 
 def get_cpu_partial_page(partial, offset, random):
-    page_num = 0
-    next_page = get_ptr_obj(partial, 'page') # page0
+    slab_num = 0
+    next_slab = get_ptr_obj(partial, 'slab') # slab0
     while True:
-        get_partial_freelist(next_page, offset, random, page_num, 'cache_cpu', 'red') # print freelist
-        next = vtoint(next_page['next'])
-        next_page = get_ptr_obj(next, 'page')
-        if next_page == 0:
+        get_partial_freelist(next_slab, offset, random, slab_num, 'cache_cpu', 'red') # print freelist
+        next = vtoint(next_slab['next'])
+        next_slab = get_ptr_obj(next, 'slab')
+        if next_slab == 0:
             break
-        page_num += 1
+        slab_num += 1
 
-def get_node_partial_page(node_page_partial_next, node_page_partial_prev, offset, random):
-    page_num = 0
-    node_partial_page = node_page_partial_next - 0x8
-    next_page = get_ptr_obj(node_partial_page, 'page') # page0
-    next_lru = node_page_partial_next
+def get_node_partial_page(node_slab_partial_next, node_slab_partial_prev, offset, random):
+    slab_num = 0
+    node_partial_slab = node_slab_partial_next - 0x10
+    next_slab = get_ptr_obj(node_partial_slab, 'slab') # slab0
+    next_lru = node_slab_partial_next
     while True:
-        get_partial_freelist(next_page, offset, random, page_num, 'cache_node', 'yellow') # print freelist
-        if(next_lru == node_page_partial_prev):
+        get_partial_freelist(next_slab, offset, random, slab_num, 'cache_node', 'yellow') # print freelist
+        if(next_lru == node_slab_partial_prev):
             break
         next_lru = get_ptr_obj(next_lru, 'list_head')
         next_lru = vtoint(next_lru['next'])
-        next = next_lru - 0x8
-        next_page = get_ptr_obj(next, 'page')
-        page_num += 1
+        next = next_lru - 0x10
+        next_slab = get_ptr_obj(next, 'slab')
+        slab_num += 1
 
 def get_kmem_cache(kmem_cache_name):
 
@@ -220,6 +220,8 @@ def get_kmem_cache(kmem_cache_name):
         pages_count = (2 ** (oo >> 16))
         offset = vtoint(next['offset'])
         random = vtoint(next['random'])
+        size = vtoint(next['size'])
+        object_size = vtoint(next['object_size'])
         
         #-----kmem_cache_cpu
         cpu_slab_offset = vtoint(next['cpu_slab'])
@@ -237,6 +239,8 @@ def get_kmem_cache(kmem_cache_name):
             cprint('<'+kmem_cache_name+'>:', 'red')
             cprint('kmem_cache      : ', ptrtohex(next), 'green')
             cprint('cpu #0 cpu_slab : ', cache_cpu, 'green')
+            cprint('size            : ', size, 'green')
+            cprint('object_size     : ', object_size, 'green')
             cprint('oo              : ', oo, 'green')
             cprint('objects_count   : ', objects_count, 'green')
             cprint('pages_count     : ', pages_count, 'green')
@@ -261,12 +265,12 @@ def get_kmem_cache(kmem_cache_name):
             #-------------kmem_cache_node partial
             cprint('first cache_node addr : ', ptrtohex(cache_node), 'yellow') 
             #cprint("cache_node['partial']['next']: ", cache_node['partial']['next'], 'yellow')
-            node_page_partial_next = vtoint(cache_node['partial']['next'])
-            node_page_partial_prev = vtoint(cache_node['partial']['prev'])
-            if node_page_partial_next == node_page_partial_prev:
+            node_slab_partial_next = vtoint(cache_node['partial']['next'])
+            node_slab_partial_prev = vtoint(cache_node['partial']['prev'])
+            if node_slab_partial_next == node_slab_partial_prev:
                 cprint("cache_node partial page", " -> ", '0x0' , 'yellow')
             else:
-                get_node_partial_page(node_page_partial_next, node_page_partial_prev, offset, random)
+                get_node_partial_page(node_slab_partial_next, node_slab_partial_prev, offset, random)
 
             #-------------kmem_cache_node full
             node_page_full_next = vtoint(cache_node['full']['next'])
@@ -274,7 +278,7 @@ def get_kmem_cache(kmem_cache_name):
             if node_page_full_next == node_page_full_prev:
                 cprint("cache_node full page", " -> ", '0x0 ', 'yellow')
             else:
-                cprint("cache_node full page", " -> ", node_page_partial_next , 'red')
+                cprint("cache_node full page", " -> ", node_slab_partial_next , 'red')
 
             break
 
